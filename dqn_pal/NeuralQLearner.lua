@@ -64,8 +64,9 @@ function nql:__init(args)
 
     self.network    = args.network or self:createNetwork()
 
-    -- aekkang: alpha value for PAL operator
+    -- <aekkang> alpha value for PAL operator
     self.alpha          = 0.5
+    -- </aekkang>
 
     -- check whether there is a network file
     local network_function
@@ -183,6 +184,9 @@ end
 function nql:getQUpdate(args)
     local s, a, r, s2, term, delta
     local q, q2, q2_max
+    -- <aekkang> Additional variables
+    local delta2, qal, qal_d, qal_d2, qpal, qpal_d, qpal_d2, q2_a
+    -- </aekkang>
 
     s = args.s
     a = args.a
@@ -224,19 +228,52 @@ function nql:getQUpdate(args)
     end
     delta:add(-1, q)
 
+    -- <aekkang> PAL operator calculation
+
+    -- q2_a = Q(s_2, a)
+    local q2_all = self.network:forward(s2):float()
+    q2_a = torch.FloatTensor(q2_all:size(1))
+    for i=1,q2_all:size(1) do
+        q2_a[i] = q2_all[i][a[i]]
+    end
+
+    -- Compute qal = delta - alpha * (max_a Q(s, a) - Q(s, a))
+    qal_d = target_q_net:forward(s):float():max(2):add(-1, q)
+    qal_d2 = qal_d:clone():mul(-1):mul(self.alpha)
+    qal = delta:clone():add(qal_d2)
+
+    -- Compute qpal = delta - alpha * (max_a Q(s_2, a) - Q(s_2, a))
+    qpal_d = q2_max:clone():add(-1, q2_a)
+    qpal_d2 = qpal_d:clone():mul(-1):mul(self.alpha):cmul(term)
+    qpal = delta:clone():add(qpal_d2)
+
+    -- Compute delta2 = delta_PAL Q(s, a)
+    delta2 = delta:clone():float():mul(0)
+    if qal > qpal then
+        delta2 = qal:clone()
+    else
+        delta2 = qpal:clone()
+    end
+
+    -- </aekkang>
+
+    -- <aekkang> Change all "delta" to "delta2"
+
     if self.clip_delta then
-        delta[delta:ge(self.clip_delta)] = self.clip_delta
-        delta[delta:le(-self.clip_delta)] = -self.clip_delta
+        delta2[delta2:ge(self.clip_delta)] = self.clip_delta
+        delta2[delta2:le(-self.clip_delta)] = -self.clip_delta
     end
 
     local targets = torch.zeros(self.minibatch_size, self.n_actions):float()
     for i=1,math.min(self.minibatch_size,a:size(1)) do
-        targets[i][a[i]] = delta[i]
+        targets[i][a[i]] = delta2[i]
     end
 
     if self.gpu >= 0 then targets = targets:cuda() end
 
-    return targets, delta, q2_max
+    return targets, delta2, q2_max
+
+    -- </aekkang>
 end
 
 
